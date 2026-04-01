@@ -1,0 +1,48 @@
+name: geopolicy
+version: "1.0.0"
+description: >
+  Multi-agent geopolitical resource competition environment where 5 country-agents
+  compete for global dominance through trade, diplomacy, military action, espionage,
+  and alliance management in a shared world with limited resources and global events.
+author: "Aditya Das"
+license: MIT
+
+title: GeoPolicy — Geopolitical Resource Competition
+emoji: "\U0001F30D"
+colorFrom: blue
+colorTo: red
+sdk: docker
+app_port: 7860
+
+environment:
+  type: multi_agent
+  real_world_domain: geopolitics
+
+tasks:
+  - id: task1
+    name: Bilateral Survival
+    difficulty: easy
+    description: 2 countries compete for 8 turns, finish with higher NPS
+
+  - id: task2
+    name: Coalition Wars
+    difficulty: medium
+    description: 5 countries, 10 turns, global events, form alliances and rank top 2
+
+  - id: task3
+    name: Full Geopolitical Simulation
+    difficulty: hard
+    description: 5 countries, 12 turns, events + espionage + special abilities, rank 1 with alliances
+
+observation_space:
+  type: structured_json
+  description: Country state with resources, diplomacy, and public info about rivals
+
+action_space:
+  type: structured_json
+  description: Geopolitical actions including trade, invade, ally, spy, develop
+
+reward:
+  type: continuous
+  range: [0.0, 1.0]
+  partial_progress: true

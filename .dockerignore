@@ -1,0 +1,8 @@
+__pycache__
+*.pyc
+.git
+logs/
+tests/
+test_llm.py
+*.log
+.dockerignore
