@@ -5,6 +5,8 @@ colorFrom: blue
 colorTo: red
 sdk: docker
 app_port: 7860
+tags:
+  - openenv
 ---
 
 # GeoPolicy — Geopolitical Resource Competition
@@ -89,3 +91,19 @@ export MODEL_NAME="your-model"
 export HF_TOKEN="your-token"
 python inference.py
 ```
+
+## Baseline Scores
+
+Scores from running `inference.py` with `gpt-4o-mini` (April 2026):
+
+| Task | Difficulty | Country Scores | Average |
+|------|-----------|---------------|---------|
+| task1 — Bilateral Survival | Easy | aria: 0.800, verdania: 0.400 | 0.600 |
+| task2 — Coalition Wars | Medium | verdania: 0.700, aqualis: 0.600, aria: 0.600, nexus: 0.300, ironhold: 0.200 | 0.480 |
+| task3 — Full Simulation | Hard | verdania: 0.890, aria: 0.775, nexus: 0.491, ironhold: 0.421, aqualis: 0.306 | 0.577 |
+
+Key observations:
+- Diplomatic countries (Verdania, Aqualis) outperform aggressive ones (Ironhold)
+- Alliance formation is the strongest strategy across tasks
+- Ironhold's invasion-first approach consistently backfires due to economy drain
+- Scores decrease with task complexity as expected (easy > hard for top performers)

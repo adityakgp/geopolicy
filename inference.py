@@ -3,54 +3,76 @@ inference.py — GeoPolicy LLM Agent
 
 Runs LLM-powered country agents through all 3 tasks and produces scores.
 
-Required environment variables:
+MANDATORY environment variables:
     API_BASE_URL  - LLM API endpoint
     MODEL_NAME    - Model identifier
     HF_TOKEN      - API key
+
+STDOUT FORMAT (required by evaluator):
+    [START] task=<task_id> env=geopolicy model=<model_name>
+    [STEP]  step=<n> action=<actions_summary> reward=<avg_reward> done=<true|false> error=<msg|null>
+    [END]   success=<true|false> steps=<n> score=<avg_score> rewards=<r1,r2,...,rn>
 
 Constraints:
     - Must complete in < 20 minutes
     - Must run on 2 vCPU, 8 GB RAM
     - Must use OpenAI client library
     - Must produce scores for all 3 tasks
-
-LLM call budget:
-    Task 1: 2 countries × 10 turns = 20 calls
-    Task 2: 5 countries × 15 turns = 75 calls
-    Task 3: 5 countries × 20 turns = 100 calls
-    Total: ~195 calls (at ~3-5s each = 10-16 minutes)
 """
 
 import os
 import json
 import re
 import time
+from typing import List, Optional
+
 from openai import OpenAI
 
 # ---- Required environment variables (competition spec) ----
-API_BASE_URL = os.environ["API_BASE_URL"]
-MODEL_NAME = os.environ["MODEL_NAME"]
-HF_TOKEN = os.environ["HF_TOKEN"]
+API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
+MODEL_NAME = os.getenv("MODEL_NAME") or "Qwen/Qwen2.5-72B-Instruct"
+HF_TOKEN = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
 
 client = OpenAI(api_key=HF_TOKEN, base_url=API_BASE_URL)
 
+BENCHMARK = "geopolicy"
+
 # ---- Logging control ----
-VERBOSE = os.environ.get("VERBOSE", "1") == "1"  # set VERBOSE=0 to silence
 LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
 os.makedirs(LOG_DIR, exist_ok=True)
-_RUN_TIMESTAMP = time.strftime("%Y%m%d_%H%M%S")  # one timestamp per run
-
-_log_file = None  # current task log file handle
+_RUN_TIMESTAMP = time.strftime("%Y%m%d_%H%M%S")
+_log_file = None
 
 
 def log(msg, indent=0):
-    """Print to terminal AND write to current task log file."""
+    """Write to current task log file only (not stdout — stdout is for structured logs)."""
     prefix = "  " * indent
     line = f"{prefix}{msg}"
-    if VERBOSE:
-        print(line)
     if _log_file:
         _log_file.write(line + "\n")
+
+
+# ---- Structured stdout logging (required by evaluator) ----
+
+def log_start(task: str, env: str, model: str) -> None:
+    print(f"[START] task={task} env={env} model={model}", flush=True)
+
+
+def log_step(step: int, action: str, reward: float, done: bool, error: Optional[str]) -> None:
+    error_val = error if error else "null"
+    done_val = str(done).lower()
+    print(
+        f"[STEP] step={step} action={action} reward={reward:.2f} done={done_val} error={error_val}",
+        flush=True,
+    )
+
+
+def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
+    rewards_str = ",".join(f"{r:.2f}" for r in rewards)
+    print(
+        f"[END] success={str(success).lower()} steps={steps} score={score:.3f} rewards={rewards_str}",
+        flush=True,
+    )
 
 
 # ---- System prompt (shared by all country agents) ----
@@ -78,8 +100,8 @@ AVAILABLE ACTIONS:
 STRATEGY TIPS:
 - Trade to fix weaknesses (low resources). Both sides benefit.
 - Alliances give +30% defense and +10 NPS each.
-- Only invade if your military × force > target military × (1 + 0.3 × their allies).
-- Don't threaten stronger countries — it backfires.
+- Only invade if your military x force > target military x (1 + 0.3 x their allies).
+- Don't threaten stronger countries -- it backfires.
 - DEVELOP when economy is high and you have a clear weakness.
 - WAIT when destabilized or broke. It's safe recovery.
 - Your special ability is powerful but has 5-turn cooldown.
@@ -91,7 +113,7 @@ JSON FORMAT:
 def build_prompt(obs: dict, country_id: str) -> str:
     """Build a concise prompt from the observation."""
     lines = [
-        f"COUNTRY: {obs['country_name']} ({obs['country_id']}) — {obs['archetype']}",
+        f"COUNTRY: {obs['country_name']} ({obs['country_id']}) -- {obs['archetype']}",
         f"TURN: {obs['turn']}/{obs['max_turns']}",
         f"OBJECTIVE: {obs['task_objective']}",
         "",
@@ -105,7 +127,7 @@ def build_prompt(obs: dict, country_id: str) -> str:
         f"AT WAR WITH: {obs['at_war_with'] or 'None'}",
         f"EMBARGOES ON YOU: {obs['embargoes_received'] or 'None'}",
         "",
-        f"SPECIAL ABILITY: {obs['special_ability']} — {obs['special_ability_description']}",
+        f"SPECIAL ABILITY: {obs['special_ability']} -- {obs['special_ability_description']}",
     ]
     if not obs['special_ability_used'] and obs['special_ability_cooldown'] == 0:
         lines.append("  Available: YES")
@@ -138,7 +160,6 @@ def build_prompt(obs: dict, country_id: str) -> str:
     if obs.get("active_global_event"):
         lines.append(f"\nACTIVE EVENT: {obs['active_global_event']}")
 
-    # Economy hint to prevent wasteful actions
     eco = obs['economy']
     affordable = []
     if eco >= 30: affordable.append("INVADE(30)")
@@ -155,13 +176,7 @@ def build_prompt(obs: dict, country_id: str) -> str:
 
 
 def _clean_action(action: dict, country_id: str) -> dict:
-    """Clean up LLM-returned action dict before passing to GeoAction.
-
-    Fixes common LLM issues:
-    - "null" string → None
-    - "None" string → None
-    - String numbers → float
-    """
+    """Clean up LLM-returned action dict before passing to GeoAction."""
     action["source_country"] = country_id
     for key in ["amount", "counter_amount"]:
         val = action.get(key)
@@ -218,7 +233,6 @@ def get_agent_action(obs: dict, country_id: str) -> dict:
     prompt = build_prompt(obs, country_id)
 
     try:
-        t0 = time.time()
         response = client.chat.completions.create(
             model=MODEL_NAME,
             max_tokens=150,
@@ -228,38 +242,9 @@ def get_agent_action(obs: dict, country_id: str) -> dict:
                 {"role": "user", "content": prompt},
             ],
         )
-        elapsed = time.time() - t0
         raw_text = response.choices[0].message.content.strip()
         action = parse_action(raw_text, country_id)
-
-        log(f"[{country_id}] LLM ({elapsed:.1f}s) → {action.get('action_type', '?')}", indent=2)
-
-        # Log details for interesting actions
-        atype = action.get("action_type", "")
-        if atype == "TRADE":
-            log(f"  Trade: {action.get('resource')} ×{action.get('amount')} → "
-                f"{action.get('target_country')} for {action.get('counter_resource')} ×{action.get('counter_amount')}", indent=2)
-        elif atype == "INVADE":
-            log(f"  Invade: {action.get('target_country')} with force={action.get('amount')}", indent=2)
-        elif atype == "PROPOSE_ALLIANCE":
-            log(f"  Alliance proposal → {action.get('target_country')}", indent=2)
-        elif atype == "DEVELOP":
-            log(f"  Develop: {action.get('resource')}", indent=2)
-        elif atype == "SPY":
-            log(f"  Spy on: {action.get('target_country')}", indent=2)
-        elif atype == "USE_SPECIAL":
-            log(f"  Special ability → {action.get('target_country')}", indent=2)
-        elif atype == "THREATEN":
-            log(f"  Threaten: {action.get('target_country')}", indent=2)
-        elif atype == "SANCTION":
-            log(f"  Sanction: {action.get('target_country')}", indent=2)
-        elif atype == "NEGOTIATE_PEACE":
-            log(f"  Peace with: {action.get('target_country')}", indent=2)
-
-        # If LLM returned garbage, log it
-        if raw_text and atype == "WAIT" and "WAIT" not in raw_text.upper():
-            log(f"  [PARSE FALLBACK] Raw LLM: {raw_text[:100]}...", indent=2)
-
+        log(f"[{country_id}] LLM -> {action.get('action_type', '?')}", indent=2)
         return action
     except Exception as e:
         log(f"[{country_id}] LLM ERROR: {e}", indent=2)
@@ -278,156 +263,162 @@ def run_task(task_id: str, env) -> dict:
     global _log_file
     from models.action import GeoAction
 
-    # Open log file for this task (timestamped to preserve previous runs)
+    # Open log file
     log_path = os.path.join(LOG_DIR, f"{task_id}_{_RUN_TIMESTAMP}.log")
     _log_file = open(log_path, "w")
-
-    print(f"\n{'='*60}")
-    print(f"  TASK: {task_id.upper()}  (log: logs/{task_id}.log)")
-    print(f"{'='*60}")
     _log_file.write(f"{'='*60}\n  TASK: {task_id.upper()}\n{'='*60}\n")
 
     env.reset(task_id=task_id)
 
+    # ---- [START] ----
+    log_start(task=task_id, env=BENCHMARK, model=MODEL_NAME)
+
     log(f"Countries: {env.active_country_ids}")
     log(f"Max turns: {env.state.max_turns}")
-    log(f"Events: {'ON' if env.global_events_enabled else 'OFF'}")
-    log(f"Hidden info: {'ON' if env.hidden_info_enabled else 'OFF'}")
 
-    # Show starting state
-    log("\n--- Starting Resources ---")
+    # Log starting state to file
     for cid in env.active_country_ids:
         c = env.countries[cid]
         log(f"  {c.name:10s} ({cid:10s}): {format_resources(c)}  NPS:{c.current_nps:.1f}")
 
-    turn_start = time.time()
+    step_num = 0
+    all_rewards: List[float] = []
+    error_msg = None
 
-    while not env.state.done:
-        turn = env.state.current_turn + 1
-        print(f"\n--- Turn {turn}/{env.state.max_turns} ---")
+    try:
+        while not env.state.done:
+            step_num += 1
 
-        # Get action for each country from LLM
-        actions = {}
-        for cid in env.active_country_ids:
-            obs = env.get_observation(cid)
-            action_dict = get_agent_action(obs.model_dump(), cid)
-            actions[cid] = GeoAction(**action_dict)
+            # Get action for each country from LLM
+            actions = {}
+            for cid in env.active_country_ids:
+                obs = env.get_observation(cid)
+                action_dict = get_agent_action(obs.model_dump(), cid)
+                actions[cid] = GeoAction(**action_dict)
 
-        # Execute all actions
-        results = env.step_all(actions)
+            # Execute all actions
+            results = env.step_all(actions)
 
-        # Log action outcomes
-        for cid in env.active_country_ids:
-            r = results[cid]
-            ar = r.metadata.get("action_result", {})
-            outcome = ""
+            # Compute average reward across all countries this step
+            step_rewards = []
+            action_parts = []
+            for cid in env.active_country_ids:
+                r = results[cid]
+                step_rewards.append(r.reward)
+                atype = r.metadata.get("action_result", {}).get("action", actions[cid].action_type)
+                action_parts.append(f"{cid}:{atype}")
 
-            if ar.get("trade_successful"):
-                gave = ar.get("gave", {})
-                got = ar.get("received", {})
-                outcome = f"✓ Traded {gave.get('amount',0):.0f} {gave.get('resource','')} for {got.get('amount',0):.0f} {got.get('resource','')}"
-            elif ar.get("trade_rejected"):
-                outcome = f"✗ Trade rejected: {ar.get('reason','')}"
-            elif ar.get("alliance_formed"):
-                outcome = f"✓ Allied with {ar.get('target','')}"
-            elif ar.get("alliance_broken"):
-                outcome = f"✓ Broke alliance with {ar.get('target','')}"
-            elif ar.get("war_won"):
-                looted = ar.get("looted", {})
-                outcome = f"⚔ WON invasion vs {ar.get('target','')} (atk:{ar.get('attack_power',0):.0f} > def:{ar.get('defense_power',0):.0f}) Looted: {looted}"
-            elif ar.get("war_lost"):
-                outcome = f"⚔ LOST invasion vs {ar.get('target','')} (atk:{ar.get('attack_power',0):.0f} < def:{ar.get('defense_power',0):.0f})"
-            elif ar.get("threat_complied"):
-                outcome = f"✓ Threat: {ar.get('target','')} paid {ar.get('tribute_gained',0):.0f} tribute"
-            elif ar.get("empty_threat"):
-                outcome = f"✗ Empty threat vs {ar.get('target','')} — reputation lost!"
-            elif ar.get("peace_negotiated"):
-                outcome = f"✓ Peace with {ar.get('target','')}"
-            elif ar.get("spy_successful"):
-                outcome = f"✓ Spied on {ar.get('target','')} — intel for {ar.get('intel_duration',0)} turns"
-            elif ar.get("spy_caught"):
-                outcome = f"✗ Spy caught by {ar.get('target','')}"
-            elif ar.get("special_used"):
-                outcome = f"★ {ar.get('ability','')}: {ar.get('effect','')}"
-            elif ar.get("fallback"):
-                outcome = f"⚠ FALLBACK to WAIT ({ar.get('fallback_reason','')})"
-            elif ar.get("action") == "WAIT":
-                outcome = "~ Resting"
-            elif ar.get("action") == "DEVELOP":
-                outcome = f"↑ Developed {ar.get('resource','')} (+{ar.get('gain',0)})"
-            elif ar.get("action") == "DEFEND":
-                outcome = "🛡 Defending"
-            elif ar.get("sanctioned"):
-                outcome = f"✓ Sanctioned {ar.get('target','')} (-{ar.get('target_economy_lost',0)} eco)"
-            elif ar.get("counter_intel_active"):
-                outcome = "🔒 Counter-intel active"
+            avg_reward = sum(step_rewards) / len(step_rewards)
+            all_rewards.append(avg_reward)
+            action_summary = "|".join(action_parts)
 
-            log(f"  {cid:10s}: {outcome}  | reward:{r.reward:.3f}", indent=1)
+            # ---- [STEP] ----
+            log_step(
+                step=step_num,
+                action=action_summary,
+                reward=avg_reward,
+                done=env.state.done,
+                error=None,
+            )
 
-        # Turn summary: rankings + NPS
-        rankings = env.get_rankings()
-        log(f"\n  Rankings: {' > '.join(rankings)}", indent=1)
-        for cid in rankings:
-            c = env.countries[cid]
-            status_flags = []
-            if c.alliances: status_flags.append(f"allies:{c.alliances}")
-            if c.at_war_with: status_flags.append(f"WAR:{c.at_war_with}")
-            if c.is_bankrupt: status_flags.append("BANKRUPT")
-            if c.is_collapsed: status_flags.append("COLLAPSED")
-            flags = " ".join(status_flags)
-            log(f"    {c.name:10s} NPS:{c.current_nps:6.1f} | {format_resources(c)} {flags}", indent=1)
+            # Detailed log to file
+            for cid in env.active_country_ids:
+                r = results[cid]
+                ar = r.metadata.get("action_result", {})
+                outcome = _describe_outcome(ar)
+                log(f"  {cid:10s}: {outcome}  | reward:{r.reward:.3f}", indent=1)
 
-        # Log global event if active
-        if env.events_engine.active_event:
-            log(f"\n  🌍 EVENT: {env.events_engine.active_event['name']}", indent=1)
+            rankings = env.get_rankings()
+            log(f"  Rankings: {' > '.join(rankings)}", indent=1)
+            for cid in rankings:
+                c = env.countries[cid]
+                log(f"    {c.name:10s} NPS:{c.current_nps:6.1f} | {format_resources(c)}", indent=1)
 
-    elapsed = time.time() - turn_start
+    except Exception as e:
+        error_msg = str(e)
+        log(f"ERROR: {error_msg}")
 
-    # Final scores
-    log(f"\n{'─'*60}")
-    log(f"  {task_id.upper()} COMPLETE ({elapsed:.1f}s)")
-    log(f"{'─'*60}")
-
+    # Final scores via graders
     scores = {}
     final_rankings = env.get_rankings()
     for rank, cid in enumerate(final_rankings, 1):
         score = env.grade_country(cid)
         scores[cid] = score
         c = env.countries[cid]
-        medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(rank, "  ")
-        log(f"  {medal} #{rank} {c.name:10s}: score={score:.3f}  NPS={c.current_nps:.1f}  {format_resources(c)}")
+        log(f"  #{rank} {c.name:10s}: score={score:.3f}  NPS={c.current_nps:.1f}")
+
+    avg_score = sum(scores.values()) / len(scores) if scores else 0.0
+    success = avg_score > 0.1 and error_msg is None
+
+    # ---- [END] ----
+    log_end(
+        success=success,
+        steps=step_num,
+        score=avg_score,
+        rewards=all_rewards,
+    )
 
     # Close log file
     _log_file.write(f"\nFinal scores: {scores}\n")
     _log_file.close()
     _log_file = None
-    print(f"  Log saved: logs/{task_id}_{_RUN_TIMESTAMP}.log")
 
     return scores
+
+
+def _describe_outcome(ar: dict) -> str:
+    """Convert action result dict to a human-readable string for log files."""
+    if ar.get("trade_successful"):
+        gave = ar.get("gave", {})
+        got = ar.get("received", {})
+        return f"Traded {gave.get('amount',0):.0f} {gave.get('resource','')} for {got.get('amount',0):.0f} {got.get('resource','')}"
+    elif ar.get("trade_rejected"):
+        return f"Trade rejected: {ar.get('reason','')}"
+    elif ar.get("alliance_formed"):
+        return f"Allied with {ar.get('target','')}"
+    elif ar.get("alliance_broken"):
+        return f"Broke alliance with {ar.get('target','')}"
+    elif ar.get("war_won"):
+        return f"WON invasion vs {ar.get('target','')} (atk:{ar.get('attack_power',0):.0f} > def:{ar.get('defense_power',0):.0f})"
+    elif ar.get("war_lost"):
+        return f"LOST invasion vs {ar.get('target','')} (atk:{ar.get('attack_power',0):.0f} < def:{ar.get('defense_power',0):.0f})"
+    elif ar.get("threat_complied"):
+        return f"Threat: {ar.get('target','')} paid {ar.get('tribute_gained',0):.0f} tribute"
+    elif ar.get("empty_threat"):
+        return f"Empty threat vs {ar.get('target','')}"
+    elif ar.get("peace_negotiated"):
+        return f"Peace with {ar.get('target','')}"
+    elif ar.get("spy_successful"):
+        return f"Spied on {ar.get('target','')}"
+    elif ar.get("spy_caught"):
+        return f"Spy caught by {ar.get('target','')}"
+    elif ar.get("special_used"):
+        return f"{ar.get('ability','')}: {ar.get('effect','')}"
+    elif ar.get("fallback"):
+        return f"FALLBACK to WAIT ({ar.get('fallback_reason','')})"
+    elif ar.get("action") == "WAIT":
+        return "Resting"
+    elif ar.get("action") == "DEVELOP":
+        return f"Developed {ar.get('resource','')} (+{ar.get('gain',0)})"
+    elif ar.get("action") == "DEFEND":
+        return "Defending"
+    elif ar.get("sanctioned"):
+        return f"Sanctioned {ar.get('target','')}"
+    elif ar.get("counter_intel_active"):
+        return "Counter-intel active"
+    return "Unknown"
 
 
 def main():
     from server.environment import GeoPolicyEnv
 
-    total_start = time.time()
     env = GeoPolicyEnv()
     all_scores = {}
-
-    print(f"GeoPolicy Inference — Model: {MODEL_NAME}")
-    print(f"API: {API_BASE_URL}")
 
     for task_id in ["task1", "task2", "task3"]:
         all_scores[task_id] = run_task(task_id, env)
 
-    total_elapsed = time.time() - total_start
-
-    print(f"\n{'='*60}")
-    print(f"  FINAL SCORES (total time: {total_elapsed:.1f}s)")
-    print(f"{'='*60}")
-    for task_id, scores in all_scores.items():
-        avg = sum(scores.values()) / len(scores)
-        print(f"  {task_id}: avg={avg:.3f}  |  {scores}")
-
+    env.close()
     return all_scores
 
 

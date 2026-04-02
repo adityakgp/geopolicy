@@ -3,7 +3,7 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("API_BASE_URL", "http://test")
 os.environ.setdefault("MODEL_NAME", "test-model")
-os.environ.setdefault("HF_TOKEN", "test-token")
+os.environ.setdefault("OPENAI_API_KEY", "test-token")
 
 from inference import build_prompt, parse_action
 from server.environment import GeoPolicyEnv

@@ -1,0 +1,25 @@
+[project]
+name = "geopolicy"
+version = "1.0.0"
+description = "Multi-agent geopolitical resource competition environment for OpenEnv"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [{name = "Aditya Das"}]
+dependencies = [
+    "openenv-core>=0.2.0",
+    "fastapi>=0.104.0",
+    "uvicorn>=0.24.0",
+    "pydantic>=2.0.0",
+    "openai>=1.0.0",
+    "numpy>=1.24.0",
+]
+
+[project.scripts]
+server = "server.app:main"
+
+[tool.setuptools.packages.find]
+include = ["server*", "models*", "config*", "tasks*"]
+
+[build-system]
+requires = ["setuptools>=77.0.0"]
+build-backend = "setuptools.build_meta"
