@@ -29,15 +29,30 @@ from typing import List, Optional
 from openai import OpenAI
 
 # ---- Required environment variables (competition spec) ----
-API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
-# Same model as the one we'll train locally (Qwen 2.5 7B Instruct), so the
-# baseline-vs-trained comparison is apples-to-apples.
-MODEL_NAME = os.getenv("MODEL_NAME") or "Qwen/Qwen2.5-7B-Instruct"
-HF_TOKEN = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
-if not HF_TOKEN:
-    raise ValueError("HF_TOKEN environment variable is required")
+# Provider selection: if OPENAI_API_KEY is set, default to OpenAI's API.
+# Otherwise fall back to HF Inference Providers via the router.
+_OPENAI_KEY = os.getenv("OPENAI_API_KEY")
+if _OPENAI_KEY:
+    DEFAULT_BASE_URL = "https://api.openai.com/v1"
+    DEFAULT_MODEL = "gpt-4o-mini"
+    DEFAULT_TOKEN = _OPENAI_KEY
+else:
+    DEFAULT_BASE_URL = "https://router.huggingface.co/v1"
+    DEFAULT_MODEL = "Qwen/Qwen2.5-7B-Instruct"
+    DEFAULT_TOKEN = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
 
-client = OpenAI(api_key=HF_TOKEN, base_url=API_BASE_URL)
+API_BASE_URL = os.getenv("API_BASE_URL") or DEFAULT_BASE_URL
+MODEL_NAME = os.getenv("MODEL_NAME") or DEFAULT_MODEL
+# If OpenAI key is present, prefer it — user explicitly chose OpenAI.
+# Otherwise fall back to HF_TOKEN / API_KEY.
+API_KEY = _OPENAI_KEY or os.getenv("HF_TOKEN") or os.getenv("API_KEY") or DEFAULT_TOKEN
+if not API_KEY:
+    raise ValueError("Set OPENAI_API_KEY or HF_TOKEN")
+
+# Keep HF_TOKEN as a back-compat alias (existing scripts/tests may reference it)
+HF_TOKEN = API_KEY
+
+client = OpenAI(api_key=API_KEY, base_url=API_BASE_URL)
 
 BENCHMARK = "geopolicy"
 
@@ -232,6 +247,10 @@ def parse_action(text: str, country_id: str) -> dict:
     return {"action_type": "WAIT", "source_country": country_id}
 
 
+_LAST_RAW_RESPONSES: dict = {}  # country_id -> raw LLM text (for debug)
+_TOKEN_USAGE = {"prompt": 0, "completion": 0, "calls": 0, "errors": 0}  # cumulative
+
+
 def get_agent_action(obs: dict, country_id: str) -> dict:
     """Call LLM to decide an action for one country."""
     prompt = build_prompt(obs, country_id)
@@ -248,11 +267,20 @@ def get_agent_action(obs: dict, country_id: str) -> dict:
                 {"role": "user", "content": prompt},
             ],
         )
+        # Track tokens for cost accounting
+        if response.usage:
+            _TOKEN_USAGE["prompt"] += response.usage.prompt_tokens
+            _TOKEN_USAGE["completion"] += response.usage.completion_tokens
+        _TOKEN_USAGE["calls"] += 1
+
         raw_text = response.choices[0].message.content.strip()
+        _LAST_RAW_RESPONSES[country_id] = raw_text
         action = parse_action(raw_text, country_id)
         log(f"[{country_id}] LLM -> {action.get('action_type', '?')}", indent=2)
         return action
     except Exception as e:
+        _TOKEN_USAGE["errors"] += 1
+        _LAST_RAW_RESPONSES[country_id] = f"<<EXCEPTION: {e}>>"
         log(f"[{country_id}] LLM ERROR: {e}", indent=2)
         return {"action_type": "WAIT", "source_country": country_id}
 
@@ -330,6 +358,7 @@ def run_task(task_id: str, env) -> dict:
                     "prompt": prompt,
                     "obs": obs_dict,
                     "action": action_dict,
+                    "raw_llm_response": _LAST_RAW_RESPONSES.get(cid, ""),
                 }
 
             # Execute all actions
