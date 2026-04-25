@@ -30,7 +30,9 @@ from openai import OpenAI
 
 # ---- Required environment variables (competition spec) ----
 API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
-MODEL_NAME = os.getenv("MODEL_NAME") or "Qwen/Qwen2.5-72B-Instruct"
+# Same model as the one we'll train locally (Qwen 2.5 7B Instruct), so the
+# baseline-vs-trained comparison is apples-to-apples.
+MODEL_NAME = os.getenv("MODEL_NAME") or "Qwen/Qwen2.5-7B-Instruct"
 HF_TOKEN = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
 if not HF_TOKEN:
     raise ValueError("HF_TOKEN environment variable is required")
@@ -235,10 +237,12 @@ def get_agent_action(obs: dict, country_id: str) -> dict:
     prompt = build_prompt(obs, country_id)
 
     try:
+        # Allow override via INFERENCE_TEMPERATURE env var (for SFT data diversity)
+        temperature = float(os.getenv("INFERENCE_TEMPERATURE", "0.7"))
         response = client.chat.completions.create(
             model=MODEL_NAME,
             max_tokens=150,
-            temperature=0.7,
+            temperature=temperature,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": prompt},
@@ -265,12 +269,30 @@ def run_task(task_id: str, env) -> dict:
     global _log_file
     from models.action import GeoAction
 
-    # Open log file
+    # Open text log file (existing — for human reading)
     log_path = os.path.join(LOG_DIR, f"{task_id}_{_RUN_TIMESTAMP}.log")
     _log_file = open(log_path, "w")
     _log_file.write(f"{'='*60}\n  TASK: {task_id.upper()}\n{'='*60}\n")
 
+    # Structured log accumulator (NEW — for SFT mining in Part 4)
+    struct_turns: List[dict] = []
+
     env.reset(task_id=task_id)
+
+    # Capture starting state for the structured log
+    struct_starting_state = {
+        cid: {
+            "oil": env.countries[cid].oil,
+            "water": env.countries[cid].water,
+            "food": env.countries[cid].food,
+            "military": env.countries[cid].military,
+            "economy": env.countries[cid].economy,
+            "internal_stability": env.countries[cid].internal_stability,
+            "reputation": env.countries[cid].reputation,
+            "current_nps": env.countries[cid].current_nps,
+        }
+        for cid in env.active_country_ids
+    }
 
     # ---- [START] ----
     log_start(task=task_id, env=BENCHMARK, model=MODEL_NAME)
@@ -291,15 +313,35 @@ def run_task(task_id: str, env) -> dict:
         while not env.state.done:
             step_num += 1
 
+            # Per-turn structured record (filled in below)
+            turn_record = {"turn": step_num, "countries": {}}
+
             # Get action for each country from LLM
             actions = {}
             for cid in env.active_country_ids:
                 obs = env.get_observation(cid)
-                action_dict = get_agent_action(obs.model_dump(), cid)
+                obs_dict = obs.model_dump()
+                prompt = build_prompt(obs_dict, cid)
+                action_dict = get_agent_action(obs_dict, cid)
                 actions[cid] = GeoAction(**action_dict)
+
+                # Capture for structured log
+                turn_record["countries"][cid] = {
+                    "prompt": prompt,
+                    "obs": obs_dict,
+                    "action": action_dict,
+                }
 
             # Execute all actions
             results = env.step_all(actions)
+
+            # Fill in step_reward + action_result per country
+            for cid in env.active_country_ids:
+                r = results[cid]
+                turn_record["countries"][cid]["step_reward"] = r.reward
+                turn_record["countries"][cid]["action_result"] = r.metadata.get("action_result", {})
+
+            struct_turns.append(turn_record)
 
             # Compute average reward across all countries this step
             step_rewards = []
@@ -360,10 +402,33 @@ def run_task(task_id: str, env) -> dict:
         rewards=all_rewards,
     )
 
-    # Close log file
+    # Close text log
     _log_file.write(f"\nFinal scores: {scores}\n")
     _log_file.close()
     _log_file = None
+
+    # Write structured log (NEW — used by Part 4 SFT mining)
+    struct_dir = os.path.join(LOG_DIR, "structured")
+    os.makedirs(struct_dir, exist_ok=True)
+    struct_path = os.path.join(struct_dir, f"{task_id}_{_RUN_TIMESTAMP}.json")
+    struct_log = {
+        "meta": {
+            "task_id": task_id,
+            "model": MODEL_NAME,
+            "timestamp": _RUN_TIMESTAMP,
+            "countries": list(env.active_country_ids),
+            "max_turns": env.state.max_turns,
+            "success": success,
+            "error": error_msg,
+        },
+        "starting_state": struct_starting_state,
+        "turns": struct_turns,
+        "final_scores": scores,
+        "final_rankings": final_rankings,
+        "final_nps": {cid: env.countries[cid].current_nps for cid in env.active_country_ids},
+    }
+    with open(struct_path, "w") as f:
+        json.dump(struct_log, f, indent=2, default=str)
 
     return scores
 

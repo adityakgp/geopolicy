@@ -10,6 +10,8 @@ The openenv framework expects step() to return an Observation (not a dict).
 The Observation's .done and .reward fields carry the RL signals.
 """
 
+import copy
+import random
 import uuid
 from typing import Any, Dict, List, Optional
 
@@ -222,6 +224,48 @@ class GeoPolicyEnv(Environment[GeoAction, GeoObservation, GeoState]):
     def close(self) -> None:
         """Clean up resources (nothing to clean for our env)."""
         pass
+
+    # ==================== snapshot / restore ====================
+
+    def snapshot(self) -> dict:
+        """Capture full env state. Used by GRPO to run N rollouts from one start.
+
+        Returns an isolated deep copy — the caller can hold it and call
+        restore() multiple times without the snapshot mutating.
+        """
+        return {
+            "_episode_id": self._episode_id,
+            "_task_id": self._task_id,
+            "_current_turn": self._current_turn,
+            "_max_turns": self._max_turns,
+            "_done": self._done,
+            "_step_count": self._step_count,
+            "hidden_info_enabled": self.hidden_info_enabled,
+            "global_events_enabled": self.global_events_enabled,
+            "special_abilities_enabled": self.special_abilities_enabled,
+            "active_country_ids": list(self.active_country_ids),
+            "countries": copy.deepcopy(self.countries),
+            "events_engine": copy.deepcopy(self.events_engine),
+            "_random_state": random.getstate(),
+        }
+
+    def restore(self, snap: dict) -> None:
+        """Replace env state with a snapshot. Deep-copies so the snapshot
+        stays reusable for further restore() calls (GRPO needs this).
+        """
+        self._episode_id = snap["_episode_id"]
+        self._task_id = snap["_task_id"]
+        self._current_turn = snap["_current_turn"]
+        self._max_turns = snap["_max_turns"]
+        self._done = snap["_done"]
+        self._step_count = snap["_step_count"]
+        self.hidden_info_enabled = snap["hidden_info_enabled"]
+        self.global_events_enabled = snap["global_events_enabled"]
+        self.special_abilities_enabled = snap["special_abilities_enabled"]
+        self.active_country_ids = list(snap["active_country_ids"])
+        self.countries = copy.deepcopy(snap["countries"])
+        self.events_engine = copy.deepcopy(snap["events_engine"])
+        random.setstate(snap["_random_state"])
 
     # ==================== step_all (our custom method for inference) ====================
 
