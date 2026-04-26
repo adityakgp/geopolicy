@@ -13,6 +13,100 @@ tags:
 
 A multi-agent OpenEnv environment where 5 country-agents compete for global dominance through trade, diplomacy, military action, espionage, and alliance management.
 
+## 🔗 Submission Links — Mandatory Items Checklist
+
+Every mandatory item from the hackathon brief, with direct URLs:
+
+| Requirement | Resource | URL |
+|---|---|---|
+| **1. Environment on Hugging Face Space** | GeoPolicy env (env v2 — composable rubrics + hidden objectives) | https://huggingface.co/spaces/adityadas14/geopolicy |
+| **2. Training script** (Unsloth + TRL) | `v3_nexus.ipynb` — full SFT + GRPO pipeline, runnable on Colab/L4 | https://huggingface.co/adityadas14/nexus-grpo-v3/blob/main/v3_nexus.ipynb |
+| **3. Loss + reward plots from a real run** | Training diagnostics (4-panel: reward + KL + diversity + group_std) | https://huggingface.co/adityadas14/nexus-grpo-v3/resolve/main/plots/training_diagnostics.png |
+| **3. (cont.) Per-objective learning curves** | Reward over training, grouped by hidden objective | https://huggingface.co/adityadas14/nexus-grpo-v3/resolve/main/plots/per_objective_curves.png |
+| **3. (cont.) Raw training log (auditable)** | `train_log.jsonl` — per-step JSON of every metric across 50 GRPO steps | https://huggingface.co/adityadas14/nexus-grpo-v3/resolve/main/train_log.jsonl |
+| **4. Mini-blog (writeup)** | Full story: problem, env, training, results | https://huggingface.co/adityadas14/nexus-grpo-v3/blob/main/BLOG_POST.md |
+| **5. README** | (this file — visible at the top of the HF Space) | https://huggingface.co/spaces/adityadas14/geopolicy/blob/main/README.md |
+| **6. Trained model + all artifacts** | Qwen 7B + LoRA checkpoints (10/20/30/40/50/best/final) + rollouts + eval results | https://huggingface.co/adityadas14/nexus-grpo-v3 |
+
+### Additional materials
+
+| Resource | URL |
+|---|---|
+| 📊 Plots-only notebook (regenerates all figures from train_log) | https://huggingface.co/adityadas14/nexus-grpo-v3/blob/main/v3_plots.ipynb |
+| 📦 GitHub source (env + tests, 137 tests passing) | https://github.com/adityakgp/geopolicy |
+| 🧪 SFT training log | https://huggingface.co/adityadas14/nexus-grpo-v3/resolve/main/sft/train_log_sft_v3.jsonl |
+| 🧪 SFT dataset (200 balanced demonstrations) | https://huggingface.co/adityadas14/nexus-grpo-v3/resolve/main/sft/sft_data_mixed_balanced.jsonl |
+| 📈 3-variant baseline eval (Base / +SFT / +SFT+GRPO, 8 episodes each) | https://huggingface.co/adityadas14/nexus-grpo-v3/resolve/main/eval_3variants.json |
+| 📈 Per-rubric × per-variant comparison | https://huggingface.co/adityadas14/nexus-grpo-v3/resolve/main/plots/eval_per_rubric_bars.png |
+| 📈 Per-objective × per-variant comparison | https://huggingface.co/adityadas14/nexus-grpo-v3/resolve/main/plots/eval_per_objective_bars.png |
+| 📈 3-variant aggregate comparison | https://huggingface.co/adityadas14/nexus-grpo-v3/resolve/main/plots/eval_aggregate_bars.png |
+
+**One-line summary:** GeoPolicy is a 5-country geopolitical sim where each country has a *secret* objective, hidden from others. The agents must infer each others' goals from behavior alone — a theory-of-mind benchmark for multi-agent LLM training. Trained Qwen 2.5 7B with GRPO on stratified hidden objectives; specialized capabilities improved by +18 to +24% on three objectives, with diplomatic component nearly doubling.
+
+---
+
+## 📈 Training Evidence
+
+Real training run, 50 GRPO steps on Qwen 2.5 7B (LoRA) over env v2. Raw per-step
+metrics, plots, and full-run logs are all on the model repo.
+
+### Headline plot — training health (reward + KL + diversity + group std)
+
+![Training diagnostics](https://huggingface.co/adityadas14/nexus-grpo-v3/resolve/main/plots/training_diagnostics.png)
+
+*4-panel diagnostic across 50 GRPO steps. Top-left: mean reward (blue) and KL
+divergence from SFT init (red) — KL grows from 0 to ~0.012, confirming the
+policy genuinely moved. Top-right: distinct action types per group stays
+between 4–11 (the v1 attempt collapsed to 1; v3's three coordinated fixes
+broke that loop). Bottom-left: group std stays well above the 0.02 floor
+needed for meaningful GRPO advantages. Bottom-right: dense and final rewards
+track each other → no reward hacking.*
+
+### Per-objective learning curves
+
+![Per-objective training trajectory](https://huggingface.co/adityadas14/nexus-grpo-v3/resolve/main/plots/per_objective_curves.png)
+
+*Reward grouped by Nexus's hidden objective across 50 training steps.
+COALITION_BUILDER jumps from 0.528 to 0.808 within 8 updates and holds the
+gain (top blue line). KINGMAKER (orange) shows the "lost-then-rediscovered"
+trajectory: dropped to 0.367 mid-training, recovered to 0.684 by step 24.*
+
+### Raw training log
+
+Auditable per-step metrics (reward, KL, grad norm, loss, action mix, per-rubric components) for all 50 GRPO steps:
+
+📋 **[`train_log.jsonl`](https://huggingface.co/adityadas14/nexus-grpo-v3/resolve/main/train_log.jsonl)** — one JSON row per step
+
+### Headline numbers
+
+| Metric | Value |
+|---|---|
+| GRPO steps trained | 50 |
+| Best avg(last-10) reward | 0.573 (at checkpoint-30) |
+| KL trajectory | 0.0000 → 0.0013 (max 0.0122) — policy moved |
+| Avg group std | 0.082 (well above 0.02 floor) |
+| Avg distinct actions/group | 4.7 (no mode collapse) |
+| Bankruptcy rate during training | 6.5% |
+
+### Per-objective wins (held-out 8-episode eval, trained vs base)
+
+| Objective | Δ reward (trained vs base) | Δ hidden score |
+|---|---|---|
+| COALITION_BUILDER | **+0.235** | **+0.75** |
+| PEACEKEEPER | **+0.193** | 0 (env-bound) |
+| KINGMAKER | **+0.184** | **+0.22** |
+
+### Per-rubric capability gains
+
+| Rubric | Base Qwen | + SFT + GRPO | Δ |
+|---|---|---|---|
+| Diplomatic | 0.32 | **0.56** | **+78%** |
+| Hidden Objective | 0.33 | **0.46** | **+37%** |
+
+For the full per-objective breakdown and discussion, see the [mini-blog](https://huggingface.co/adityadas14/nexus-grpo-v3/blob/main/BLOG_POST.md).
+
+---
+
 ## Environment Overview
 
 Each country has unique resources (oil, water, food, military, economy) and a special ability. Countries must trade, ally, threaten, and spy to maximize their National Power Score (NPS) across multiple turns while adapting to random global events.
