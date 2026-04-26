@@ -115,10 +115,12 @@ def test_negotiate_peace_not_at_war():
     print("PASS: peace rejected when not at war")
 
 def test_invasion_reward_differs():
-    e1 = GeoPolicyEnv(); e1.reset(task_id="task3")
-    r1 = e1.step(GeoAction(action_type="INVADE", source_country="ironhold", target_country="aqualis", amount=0.8))
-    e2 = GeoPolicyEnv(); e2.reset(task_id="task3")
-    r2 = e2.step(GeoAction(action_type="INVADE", source_country="aqualis", target_country="ironhold", amount=0.8))
+    # Use task1 to isolate the military signal — task1 has no hidden objectives,
+    # so the comparison reflects pure invasion outcome (winner > loser military rubric).
+    e1 = GeoPolicyEnv(); e1.reset(task_id="task1")
+    r1 = e1.step(GeoAction(action_type="INVADE", source_country="aria", target_country="verdania", amount=0.8))
+    e2 = GeoPolicyEnv(); e2.reset(task_id="task1")
+    r2 = e2.step(GeoAction(action_type="INVADE", source_country="verdania", target_country="aria", amount=0.8))
     assert r1.reward > r2.reward
     print(f"PASS: invasion rewards differ (winner={r1.reward}, loser={r2.reward})")
 

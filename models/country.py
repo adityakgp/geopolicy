@@ -64,6 +64,10 @@ class Country:
         self.is_bankrupt: bool = False
         self.is_collapsed: bool = False     # stability hit 0
 
+        # Hidden objective (env v2). Visible to this country only.
+        # None means objective is disabled (Task 1) or not yet assigned.
+        self.hidden_objective: Optional[str] = None
+
     def get_resource(self, resource_name: str) -> float:
         """Get a resource value by name."""
         return getattr(self, resource_name, 0.0)
@@ -107,4 +111,5 @@ class Country:
             "nps_history": self.nps_history,
             "is_bankrupt": self.is_bankrupt,
             "is_collapsed": self.is_collapsed,
+            "hidden_objective": self.hidden_objective,
         }

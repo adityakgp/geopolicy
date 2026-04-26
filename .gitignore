@@ -6,3 +6,6 @@ logs/
 .venv/
 *.egg-info/
 test_llm.py
+
+# env v2 smoke run output dirs (keep test_runs/run_task3_smoke.py)
+test_runs/env_v2_*/

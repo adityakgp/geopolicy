@@ -92,3 +92,9 @@ class GeoObservation(Observation):
     # Task info
     task_id: str = "task1"
     task_objective: str = ""
+
+    # Hidden objective (env v2). Visible only to the country whose view this is.
+    # Other countries see no hidden_objective field on PublicCountryInfo.
+    hidden_objective_id: Optional[str] = None
+    hidden_objective_name: Optional[str] = None
+    hidden_objective_description: Optional[str] = None

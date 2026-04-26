@@ -35,9 +35,9 @@ from config.constants import (
     NATURAL_RECOVERY,
 )
 from server.actions import resolve_action
-from server.rewards import calculate_step_reward
 from server.events import EventsEngine
-from tasks.graders import grade
+from server.scoring import TaskRubric
+from config.objectives import assign_objectives, get_objective
 
 
 def value_to_tier(value: float) -> str:
@@ -92,8 +92,10 @@ class GeoPolicyEnv(Environment[GeoAction, GeoObservation, GeoState]):
         self.hidden_info_enabled: bool = False
         self.global_events_enabled: bool = False
         self.special_abilities_enabled: bool = False
+        self.hidden_objectives_enabled: bool = False
 
         self.events_engine: EventsEngine = EventsEngine()
+        self.task_rubric: TaskRubric = TaskRubric("task1")
 
     # ==================== REQUIRED: reset() ====================
 
@@ -129,6 +131,17 @@ class GeoPolicyEnv(Environment[GeoAction, GeoObservation, GeoState]):
             country.current_nps = calculate_nps(country)
             country.nps_history = [country.current_nps]
             self.countries[cid] = country
+
+        # env v2: TaskRubric handles step rewards and final grades
+        self.task_rubric = TaskRubric(task_id)
+
+        # env v2: hidden objectives — disabled in Task 1, enabled in Task 2/3
+        self.hidden_objectives_enabled = task_id in ("task2", "task3")
+        if self.hidden_objectives_enabled:
+            rng = random.Random(seed) if seed is not None else random.Random()
+            assignments = assign_objectives(self.active_country_ids, rng)
+            for cid, obj_id in assignments.items():
+                self.countries[cid].hidden_objective = obj_id
 
         self.events_engine = EventsEngine()
         if self.global_events_enabled:
@@ -182,12 +195,11 @@ class GeoPolicyEnv(Environment[GeoAction, GeoObservation, GeoState]):
         if len(solvent) <= 1 and len(self.countries) > 1:
             self._done = True
 
-        # Calculate reward
+        # Calculate reward via composable rubrics
         rankings = self.get_rankings()
-        reward = calculate_step_reward(
+        reward_result = self.task_rubric.step_reward(
             country_id=acting_country,
-            prev_nps=prev_nps[acting_country],
-            new_nps=self.countries[acting_country].current_nps,
+            all_countries=self.countries,
             action_result=action_result,
             rankings=rankings,
         )
@@ -195,12 +207,13 @@ class GeoPolicyEnv(Environment[GeoAction, GeoObservation, GeoState]):
         # Build observation with done and reward set
         obs = self._build_observation(acting_country)
         obs.done = self._done
-        obs.reward = round(reward, 4)
+        obs.reward = round(reward_result["total"], 4)
         obs.metadata = {
             "action_type": action.action_type,
             "action_result": action_result,
             "turn": self._current_turn,
             "rankings": rankings,
+            "reward_components": reward_result["components"],
         }
         return obs
 
@@ -243,6 +256,7 @@ class GeoPolicyEnv(Environment[GeoAction, GeoObservation, GeoState]):
             "hidden_info_enabled": self.hidden_info_enabled,
             "global_events_enabled": self.global_events_enabled,
             "special_abilities_enabled": self.special_abilities_enabled,
+            "hidden_objectives_enabled": self.hidden_objectives_enabled,
             "active_country_ids": list(self.active_country_ids),
             "countries": copy.deepcopy(self.countries),
             "events_engine": copy.deepcopy(self.events_engine),
@@ -262,9 +276,15 @@ class GeoPolicyEnv(Environment[GeoAction, GeoObservation, GeoState]):
         self.hidden_info_enabled = snap["hidden_info_enabled"]
         self.global_events_enabled = snap["global_events_enabled"]
         self.special_abilities_enabled = snap["special_abilities_enabled"]
+        # Backward compat: older snapshots may not have hidden_objectives_enabled
+        self.hidden_objectives_enabled = snap.get(
+            "hidden_objectives_enabled", self._task_id in ("task2", "task3")
+        )
         self.active_country_ids = list(snap["active_country_ids"])
         self.countries = copy.deepcopy(snap["countries"])
         self.events_engine = copy.deepcopy(snap["events_engine"])
+        # Rebuild task_rubric from task_id (rubric instances are stateless)
+        self.task_rubric = TaskRubric(self._task_id)
         random.setstate(snap["_random_state"])
 
     # ==================== step_all (our custom method for inference) ====================
@@ -308,20 +328,20 @@ class GeoPolicyEnv(Environment[GeoAction, GeoObservation, GeoState]):
         rankings = self.get_rankings()
         results = {}
         for cid in self.active_country_ids:
-            reward = calculate_step_reward(
+            reward_result = self.task_rubric.step_reward(
                 country_id=cid,
-                prev_nps=prev_nps[cid],
-                new_nps=self.countries[cid].current_nps,
+                all_countries=self.countries,
                 action_result=action_results.get(cid, {}),
                 rankings=rankings,
             )
             obs = self._build_observation(cid)
             obs.done = self._done
-            obs.reward = round(reward, 4)
+            obs.reward = round(reward_result["total"], 4)
             obs.metadata = {
                 "action_result": action_results.get(cid, {}),
                 "turn": self._current_turn,
                 "rankings": rankings,
+                "reward_components": reward_result["components"],
             }
             results[cid] = obs
 
@@ -424,6 +444,16 @@ class GeoPolicyEnv(Environment[GeoAction, GeoObservation, GeoState]):
 
         task_config = TASK_CONFIG.get(self._task_id, TASK_CONFIG["task1"])
 
+        # env v2: surface hidden objective for THIS country only
+        # (PublicCountryInfo for others does NOT include hidden_objective)
+        hidden_objective_id = country.hidden_objective
+        hidden_objective_name = None
+        hidden_objective_description = None
+        if hidden_objective_id is not None:
+            obj = get_objective(hidden_objective_id)
+            hidden_objective_name = obj["name"]
+            hidden_objective_description = obj["description"]
+
         return GeoObservation(
             country_id=country_id,
             country_name=country.name,
@@ -456,6 +486,9 @@ class GeoPolicyEnv(Environment[GeoAction, GeoObservation, GeoState]):
             turns_until_next_event=self.events_engine.turns_until_next,
             task_id=self._task_id,
             task_objective=task_config["description"],
+            hidden_objective_id=hidden_objective_id,
+            hidden_objective_name=hidden_objective_name,
+            hidden_objective_description=hidden_objective_description,
         )
 
     def get_observation(self, country_id: str) -> GeoObservation:
@@ -490,6 +523,23 @@ class GeoPolicyEnv(Environment[GeoAction, GeoObservation, GeoState]):
         }
 
     def grade_country(self, country_id: str) -> float:
-        """Grade a single country's performance. Returns 0.0-1.0."""
-        results = self.get_final_results()
-        return grade(country_id, self._task_id, results)
+        """Grade a single country's performance via composable rubrics. Returns 0.0-1.0."""
+        rankings = self.get_rankings()
+        result = self.task_rubric.final_grade(
+            country_id=country_id,
+            all_countries=self.countries,
+            rankings=rankings,
+        )
+        return round(result["total"], 4)
+
+    def grade_country_detailed(self, country_id: str) -> dict:
+        """Same as grade_country but returns the per-rubric breakdown.
+
+        Useful for logging/plotting the contribution of each rubric.
+        """
+        rankings = self.get_rankings()
+        return self.task_rubric.final_grade(
+            country_id=country_id,
+            all_countries=self.countries,
+            rankings=rankings,
+        )

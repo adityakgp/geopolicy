@@ -104,10 +104,14 @@ def test_task_difficulty_progression():
     print(f"PASS: difficulty progression ({scores})")
 
 def test_alliance_boosts_task2_score():
-    e1 = GeoPolicyEnv(); e1.reset(task_id="task2")
+    # Clear hidden objectives so this test isolates the alliance signal.
+    # (Otherwise a random LONE_WOLF assignment to aria would make alliance hurt.)
+    e1 = GeoPolicyEnv(); e1.reset(task_id="task2", seed=0)
+    for c in e1.countries.values(): c.hidden_objective = None
     for _ in range(10): e1.step_all({cid: GeoAction(action_type="WAIT", source_country=cid) for cid in e1.active_country_ids})
     s1 = e1.grade_country("aria")
-    e2 = GeoPolicyEnv(); e2.reset(task_id="task2")
+    e2 = GeoPolicyEnv(); e2.reset(task_id="task2", seed=0)
+    for c in e2.countries.values(): c.hidden_objective = None
     for t in range(10):
         a = {cid: GeoAction(action_type="WAIT", source_country=cid) for cid in e2.active_country_ids}
         if t == 0: a["aria"] = GeoAction(action_type="PROPOSE_ALLIANCE", source_country="aria", target_country="verdania")

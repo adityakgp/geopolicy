@@ -57,14 +57,58 @@ Each country has unique resources (oil, water, food, military, economy) and a sp
 
 Each country sees its own full state (resources, alliances, wars) and partial information about rivals (tiers like "high"/"low" instead of exact numbers). Exact rival data requires SPY actions.
 
-## Reward Function
+## Hidden Objectives (env v2 — Task 2 & 3 only)
 
-Per-turn reward combining:
-- NPS delta (did your score improve?)
-- Ranking bonus (where are you vs others?)
-- Action quality (trade succeeded? war won? alliance formed?)
+At episode start each country is assigned a **secret goal** drawn from a pool
+of 8 templates. The goal is visible to that country in its own observation,
+but **hidden from every other country**. Other countries must infer goals
+from observed behavior — this is the theory-of-mind / deception layer.
 
-All rewards in [0.0, 1.0] range with partial progress signals.
+| ID | Name | Description |
+|---|---|---|
+| `KINGMAKER` | Kingmaker | Finish rank 2-3 AND have your top ally finish rank 1 |
+| `SABOTEUR` | Saboteur | Prevent any other country from reaching NPS > 100 |
+| `SURVIVOR` | Survivor | Never declare war; finish without bankruptcy |
+| `TRADE_HEGEMON` | Trade Hegemon | Be involved in ≥ 60% of all successful trades |
+| `COALITION_BUILDER` | Coalition Builder | End with ≥ 2 alliances; break zero alliances |
+| `LONE_WOLF` | Lone Wolf | Finish top-3 with zero alliances ever formed |
+| `SPY_MASTER` | Spy Master | Successfully execute ≥ 4 SPY actions |
+| `PEACEKEEPER` | Peacekeeper | Negotiate ≥ 2 peace deals; finish solvent |
+
+Several pairs are anti-correlated (Lone Wolf vs Coalition Builder, Survivor vs
+Spy Master) so a single universal strategy cannot satisfy all assignments.
+Scoring is closed-form arithmetic, no LLM judge involved. Disabled in Task 1
+(2 countries is too small for deception to be meaningful).
+
+## Reward Function — Composable Rubrics (env v2)
+
+Both per-step rewards and end-of-episode grades flow through the same
+**TaskRubric** blender (`server/scoring.py`), composed of 5 named rubrics:
+
+| Rubric | Measures |
+|---|---|
+| `EconomicRubric` | Resource floor + trade quality + spam guard |
+| `DiplomaticRubric` | Coalition strength + alliance loyalty + churn guard |
+| `MilitaryRubric` | Real-threat defense + war success + bankruptcy risk |
+| `StabilityRubric` | Internal stability + reputation + solvency |
+| `HiddenObjectiveRubric` | Secret-goal progress (theory-of-mind layer) |
+
+Each rubric returns a score in `[0, 1]` and ships its own anti-gaming guards
+(trade-quality scaling, alliance-churn penalty, defend-without-threat zero
+credit, etc.). The TaskRubric blender weights them per-task:
+
+| Rubric | Task 1 | Task 2 | Task 3 |
+|---|---:|---:|---:|
+| Economic | 0.25 | 0.20 | 0.20 |
+| Diplomatic | 0.10 | 0.30 | 0.20 |
+| Military | 0.40 | 0.15 | 0.15 |
+| Stability | 0.25 | 0.15 | 0.15 |
+| Hidden Objective | 0.00 | 0.20 | 0.30 |
+
+Step rewards and final grades use the **same** rubrics with the **same**
+weights — eliminating the step/grader misalignment that made v1 reward-hackable.
+Per-rubric scores are returned in `obs.metadata["reward_components"]` for
+inspection and per-component learning curves.
 
 ## Global Events (Task 2 & 3)
 
@@ -93,6 +137,10 @@ python inference.py
 ```
 
 ## Baseline Scores
+
+> **Note:** the table below is from env v1 (monolithic reward + no hidden objectives).
+> Env v2 changes the reward shape and adds hidden objectives — baselines need to be
+> re-run on the new env before they apply to v2 training.
 
 Scores from running `inference.py` with `gpt-4o-mini` (April 2026):
 
